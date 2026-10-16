@@ -12,7 +12,7 @@
 
 ## Following milestones (not implemented)
 
-1. A broker for system calls: filesystem operations, commands, application opening and notifications.
+1. Extend the implemented filesystem/command broker with application opening and notifications. See [kernel contract](kernel.md) for the current manual-only, one-call approval surface.
 2. A policy engine over assistant identity, underlying model, tool identity, action, canonical path, executable, arguments and session. Check every syscall, not just tool activation.
 3. Decision-model checks for selected calls. These add a condition to policy; they cannot override explicit denial or expand granted capabilities. Human questions suspend and resume the operation.
 4. Python tools in isolated processes. Tools receive a capability-scoped broker client. An ordinary Python process is not a sandbox: OS-level restrictions are required before promising mediated-only access. Cross-platform sandbox mechanisms must be assessed separately.
@@ -21,7 +21,7 @@
 
 ## Boundaries
 
-The current milestone does not execute tools or arbitrary commands. Rust's sidecar process creation is a fixed application function, not an agent syscall. Local persistence does not imply local inference: prompts, history and future retrieved excerpts are sent to the selected provider. Plain HTTP is supported for local Ollama or trusted endpoints; use HTTPS for remote providers.
+The current milestone does not execute agent tools. The manual Système console can run explicitly approved local operations and commands. Rust's sidecar process creation is a fixed application function, not an agent syscall. Local persistence does not imply local inference: prompts, history and future retrieved excerpts are sent to the selected provider. Plain HTTP is supported for local Ollama or trusted endpoints; use HTTPS for remote providers.
 
 Cancellation stops consuming the stream at the next received line (or after the 120-second read timeout), persists partial output and closes the connection. It does not guarantee the remote provider stops computation or billing. No automatic context truncation: context-limit failures are surfaced to the user.
 
@@ -31,4 +31,4 @@ Requests: `{ "id": "uuid", "method": "bootstrap", "params": {} }`.
 Responses: `{ "id": "uuid", "result": ... }` or `{ "id": "uuid", "error": "safe message" }`.
 Events: `chat.delta`, `chat.done`, `engine.stopped` (host-generated).
 
-Methods: `bootstrap`, `provider.save`, `provider.models`, `assistant.save`, `conversation.create`, `conversation.get`, `conversation.delete`, `chat.start`, `chat.cancel`.
+Methods: `bootstrap`, `provider.save`, `provider.models`, `assistant.save`, `conversation.create`, `conversation.get`, `conversation.delete`, `chat.start`, `chat.cancel`, `system.catalog`, `system.prepare`, `system.execute`, `system.history`.

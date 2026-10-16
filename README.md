@@ -11,7 +11,9 @@ A desktop workspace for AI assistants. Linux first, with a Tauri foundation for 
 - API keys in the system keyring; session-only fallback if no keyring is available.
 - Opt-in desktop notifications when a response finishes while the app is unfocused.
 
-Python tools, agent permissions, decision models, attachments and knowledge indexing are planned next. This version does not execute agent tools.
+A local syscall kernel is available in **Système** for manual testing: `fs.stat`, `fs.list`, `fs.read`, `fs.write`, `fs.mkdir`, `process.run`. Prepare a call, review the resolved arguments, then approve or deny that one execution. Requests expire after five minutes. The local audit log excludes content, command arguments and output.
+
+Python tools, agent permission rules, decision models, attachments and knowledge indexing are planned next. Assistants cannot call the kernel yet. Commands run with your user privileges; this is not a sandbox. See [kernel contract](docs/kernel.md).
 
 ## Run on Linux
 
@@ -21,7 +23,7 @@ On Ubuntu / Debian, install the Tauri system dependencies:
 
 ```bash
 sudo apt update
-sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libcairo2-dev libdbus-1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
 ```
 
 Then:

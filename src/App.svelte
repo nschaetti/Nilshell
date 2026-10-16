@@ -4,6 +4,7 @@
   import DOMPurify from 'dompurify';
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
   import { desktop, rpc, onEngineEvent } from './lib/engine';
+  import SystemPanel from './lib/SystemPanel.svelte';
   import type { Assistant, Bootstrap, Conversation, EngineEvent, Provider } from './lib/types';
 
   let providers = $state<Provider[]>([]);
@@ -11,7 +12,7 @@
   let conversations = $state<Conversation[]>([]);
   let current = $state<Conversation | null>(null);
   let selectedAssistant = $state('');
-  let view = $state<'chat' | 'providers' | 'assistants'>('chat');
+  let view = $state<'chat' | 'providers' | 'assistants' | 'system'>('chat');
   let input = $state('');
   let error = $state('');
   let notice = $state('');
@@ -147,6 +148,7 @@
       <button class:active={view === 'chat'} onclick={() => view = 'chat'}>◈ <span>Conversations</span><small>{conversations.length}</small></button>
       <button class:active={view === 'assistants'} onclick={() => { view = 'assistants'; editAssistant(); }}>◇ <span>Assistants</span><small>{assistants.length}</small></button>
       <button class:active={view === 'providers'} onclick={() => view = 'providers'}>⌘ <span>Fournisseurs</span><small>{providers.length}</small></button>
+      <button class:active={view === 'system'} onclick={() => view = 'system'}>⚙ <span>Système</span></button>
     </nav>
     <div class="section-label history-label">CONVERSATIONS RÉCENTES</div>
     <div class="history">
@@ -158,7 +160,7 @@
   </aside>
 
   <main>
-    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
+    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : view === 'system' ? 'Système' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
     {#if !desktop}<div class="banner">Aperçu visuel — lance <code>npm run desktop dev</code> pour connecter le moteur local.</div>{/if}
     {#if error}<div class="banner error" role="alert">{error}<button onclick={() => error = ''} aria-label="Fermer l’erreur">×</button></div>{/if}
     {#if notice}<div class="banner notice" role="status">{notice}<button onclick={() => notice = ''} aria-label="Fermer le message">×</button></div>{/if}
@@ -176,6 +178,8 @@
         {/if}
       </div>
       <div class="composer-area"><form class="composer" onsubmit={event => { event.preventDefault(); send(); }}><textarea aria-label="Message" bind:value={input} placeholder={assistants.length ? 'Écris ton message…' : 'Configure un fournisseur et crée ton premier assistant…'} rows="3" disabled={busy || !assistants.length || !desktop} onkeydown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } }}></textarea><div class="composer-bottom"><span><span class="tiny-diamond">◇</span> {current?.assistant.model ?? assistants.find(a => a.id === selectedAssistant)?.model ?? 'Aucun modèle sélectionné'}</span>{#if busy}<button type="button" class="send-button stop" onclick={cancel}>■ Arrêter</button>{:else}<button class="send-button" disabled={!input.trim() || !selectedAssistant || !desktop} aria-label="Envoyer">↑</button>{/if}</div></form><div class="composer-hint">Entrée pour envoyer <span>·</span> Maj + Entrée pour une nouvelle ligne</div></div>
+    {:else if view === 'system'}
+      <SystemPanel />
     {:else if view === 'providers'}
       <div class="settings-page"><div class="eyebrow">CONNEXIONS</div><h1>Tes fournisseurs.</h1><p class="subtitle">Choisis où tes modèles s’exécutent. Garde le contrôle de tes connexions.</p><div class="settings-grid"><section class="settings-list"><button class="outline" onclick={() => editProvider()}>＋ Ajouter un fournisseur</button>{#each providers as provider}<button class="entity-card" class:selected={providerForm.id === provider.id} onclick={() => editProvider(provider)}><strong>{provider.name}</strong><span>{provider.base_url}</span><small>{provider.has_key ? 'Clé configurée' : 'Sans clé API'}</small></button>{/each}</section><form class="settings-form" onsubmit={event => { event.preventDefault(); saveProvider(); }}><h2>{providerForm.id ? 'Modifier le fournisseur' : 'Nouveau fournisseur'}</h2><div class="presets"><button type="button" onclick={() => preset('openai')}>OpenAI</button><button type="button" onclick={() => preset('openrouter')}>OpenRouter</button><button type="button" onclick={() => preset('ollama')}>Ollama</button></div><label>Nom<input bind:value={providerForm.name} required maxlength="100" placeholder="Mon fournisseur"/></label><label>Protocole<select bind:value={providerForm.kind}><option value="openai">API compatible OpenAI</option><option value="ollama">API native Ollama</option></select></label><label>URL de base<input bind:value={providerForm.base_url} required type="url" placeholder="https://api.openai.com/v1"/></label><p class="field-help">OpenAI : inclure /v1. Ollama : adresse du serveur sans /api.</p><label>Clé API<input type="password" bind:value={providerForm.api_key} autocomplete="new-password" placeholder={providerForm.id ? 'Laisser vide pour conserver la clé' : 'Optionnelle pour Ollama'} /></label>{#if providerForm.id}<label class="checkbox"><input type="checkbox" bind:checked={providerForm.clear_key}/> Effacer la clé existante</label>{/if}<p class="field-help">Stockée dans le trousseau système si disponible. Jamais dans l’historique.</p><button class="primary" disabled={saving || !desktop}>{saving ? 'Enregistrement…' : 'Enregistrer le fournisseur'}</button></form></div></div>
     {:else}

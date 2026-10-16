@@ -12,6 +12,7 @@ import keyring
 from pydantic import BaseModel, Field
 
 from . import providers
+from .kernel import Kernel, KernelError
 from .store import Store
 
 
@@ -35,6 +36,7 @@ class AssistantInput(BaseModel):
 class Engine:
     def __init__(self, directory, emit):
         self.store = Store(Path(directory))
+        self.kernel = Kernel(self.store)
         self.emit = emit
         self.lock = threading.Lock()
         self.active = None
@@ -49,6 +51,14 @@ class Engine:
             return ""
 
     def dispatch(self, method, params):
+        if method == "system.catalog":
+            return self.kernel.catalog()
+        if method == "system.history":
+            return self.kernel.history()
+        if method == "system.prepare":
+            return self.kernel.prepare(params["syscall"], params["arguments"])
+        if method == "system.execute":
+            return self.kernel.execute(params["id"], params.get("approved", False))
         if method == "bootstrap":
             return {
                 "providers": [
@@ -187,10 +197,17 @@ def main():
             # Validation errors can include input values: never serialize them.
             safe = (
                 str(exc)
-                if type(exc) is ValueError or isinstance(exc, providers.ProviderError)
+                if type(exc) is ValueError
+                or isinstance(exc, (providers.ProviderError, KernelError))
                 else "Opération impossible. Vérifie les paramètres et la connexion."
             )
-            emit({"id": identifier, "error": safe})
+            emit(
+                {
+                    "id": identifier,
+                    "error": safe,
+                    "error_code": exc.code if isinstance(exc, KernelError) else "operation_failed",
+                }
+            )
 
     for line in sys.stdin:
         try:

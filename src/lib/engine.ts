@@ -29,7 +29,7 @@ export async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
   await initialize();
   const id = crypto.randomUUID();
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Le moteur ne répond pas.')); }, 45000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Le moteur ne répond pas.')); }, method === 'system.execute' ? 75000 : 45000);
     pending.set(id, { resolve: value => resolve(value as T), reject, timer });
     invoke('engine_send', { request: { id, method, params } }).catch(error => {
       clearTimeout(timer); pending.delete(id); reject(new Error(String(error)));

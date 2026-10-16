@@ -105,6 +105,24 @@ def test_stdio_chat_roundtrip(tmp_path):
         assert result["messages"][-1]["status"] == "complete"
         assert received[0]["messages"][0] == {"role": "system", "content": "Precise"}
         assert received[0]["stream"] is True
+        # The same packaged stdio surface must expose the syscall broker.
+        path = tmp_path / "kernel-test.txt"
+        prepared = request(
+            "system.prepare",
+            {"syscall": "fs.write", "arguments": {"path": str(path), "content": "local-only"}},
+        )
+        assert not path.exists()
+        result = request("system.execute", {"id": prepared["id"], "approved": True})
+        assert result["result"]["bytes_written"] == 10
+        prepared = request(
+            "system.prepare", {"syscall": "fs.read", "arguments": {"path": str(path)}}
+        )
+        result = request("system.execute", {"id": prepared["id"], "approved": True})
+        assert result["result"]["content"] == "local-only"
+        audit = request("system.history", {})
+        assert len(audit) == 2
+        assert "local-only" not in json.dumps(audit)
+
     finally:
         process.terminate()
         process.communicate(timeout=10)
