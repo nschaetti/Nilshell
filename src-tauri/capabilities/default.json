@@ -1,0 +1,1 @@
+{"identifier":"main-window","description":"Desktop events and opt-in notifications only. No filesystem or shell API exposed to the webview.","windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-unlisten","notification:default"]}
