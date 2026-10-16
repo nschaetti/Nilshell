@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import providers
 from .kernel import Kernel, KernelError
+from .permissions import Caller
 from .store import Store
 
 
@@ -51,14 +52,44 @@ class Engine:
             return ""
 
     def dispatch(self, method, params):
+        if method == "permissions.list":
+            return self.kernel.permissions.rules()
+        if method == "permissions.save":
+            return self.kernel.permissions.save(params)
+        if method == "permissions.delete":
+            return self.kernel.permissions.delete(params["id"])
         if method == "system.catalog":
             return self.kernel.catalog()
         if method == "system.history":
             return self.kernel.history()
         if method == "system.prepare":
-            return self.kernel.prepare(params["syscall"], params["arguments"])
+            # This selector belongs to the trusted desktop console. Future tools
+            # must use a separate host-issued identity, not this RPC method.
+            assistant_id = params.get("assistant_id")
+            caller = Caller(tool_id=params.get("tool_id", "desktop.console"))
+            if (
+                not isinstance(caller.tool_id, str)
+                or not caller.tool_id.strip()
+                or len(caller.tool_id) > 150
+            ):
+                raise ValueError("Identifiant d’outil invalide.")
+            if assistant_id:
+                assistant = next(
+                    (a for a in self.store.all("assistants") if a["id"] == assistant_id), None
+                )
+                if assistant is None:
+                    raise ValueError("Assistant introuvable.")
+                caller = Caller(
+                    assistant_id=assistant["id"],
+                    provider_id=assistant["provider_id"],
+                    model=assistant["model"],
+                    tool_id=caller.tool_id,
+                )
+            return self.kernel.prepare(params["syscall"], params["arguments"], caller)
         if method == "system.execute":
-            return self.kernel.execute(params["id"], params.get("approved", False))
+            return self.kernel.execute(
+                params["id"], params.get("approved"), params.get("remember", "once")
+            )
         if method == "bootstrap":
             return {
                 "providers": [

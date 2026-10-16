@@ -13,7 +13,7 @@
 ## Following milestones (not implemented)
 
 1. Extend the implemented filesystem/command broker with application opening and notifications. See [kernel contract](kernel.md) for the current manual-only, one-call approval surface.
-2. A policy engine over assistant identity, underlying model, tool identity, action, canonical path, executable, arguments and session. Check every syscall, not just tool activation.
+2. Connect the implemented [permission engine](permissions.md) to authenticated identities from an isolated tool runner. Current rule management and manual tests are trusted desktop functions.
 3. Decision-model checks for selected calls. These add a condition to policy; they cannot override explicit denial or expand granted capabilities. Human questions suspend and resume the operation.
 4. Python tools in isolated processes. Tools receive a capability-scoped broker client. An ordinary Python process is not a sandbox: OS-level restrictions are required before promising mediated-only access. Cross-platform sandbox mechanisms must be assessed separately.
 5. Local knowledge: watch selected files/directories, index incremental versions, cite original paths/pages and open the source in its registered app through the broker.
@@ -31,4 +31,4 @@ Requests: `{ "id": "uuid", "method": "bootstrap", "params": {} }`.
 Responses: `{ "id": "uuid", "result": ... }` or `{ "id": "uuid", "error": "safe message" }`.
 Events: `chat.delta`, `chat.done`, `engine.stopped` (host-generated).
 
-Methods: `bootstrap`, `provider.save`, `provider.models`, `assistant.save`, `conversation.create`, `conversation.get`, `conversation.delete`, `chat.start`, `chat.cancel`, `system.catalog`, `system.prepare`, `system.execute`, `system.history`.
+Methods: `bootstrap`, `provider.save`, `provider.models`, `assistant.save`, `conversation.create`, `conversation.get`, `conversation.delete`, `chat.start`, `chat.cancel`, `system.catalog`, `system.prepare`, `system.execute`, `system.history`, `permissions.list`, `permissions.save`, `permissions.delete`.

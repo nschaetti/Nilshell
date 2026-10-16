@@ -56,7 +56,7 @@ def test_stdio_chat_roundtrip(tmp_path):
     counter = 0
     events = []
 
-    def request(method, params):
+    def request(method, params, expected_error=None):
         nonlocal counter
         counter += 1
         process.stdin.write(
@@ -67,6 +67,9 @@ def test_stdio_chat_roundtrip(tmp_path):
             result = lines.get(timeout=15)
             events.append(result)
             if result.get("id") == str(counter):
+                if expected_error is not None:
+                    assert result.get("error_code") == expected_error, result
+                    return result
                 assert "error" not in result, result
                 return result["result"]
 
@@ -122,6 +125,36 @@ def test_stdio_chat_roundtrip(tmp_path):
         audit = request("system.history", {})
         assert len(audit) == 2
         assert "local-only" not in json.dumps(audit)
+        rule = request(
+            "permissions.save",
+            {
+                "name": "Read rule",
+                "effect": "allow",
+                "syscall": "fs.read",
+                "directory": str(tmp_path),
+                "scope": "permanent",
+            },
+        )
+        prepared = request(
+            "system.prepare", {"syscall": "fs.read", "arguments": {"path": str(path)}}
+        )
+        assert prepared["permission"]["effect"] == "allow"
+        assert (
+            request("system.execute", {"id": prepared["id"]})["result"]["content"] == "local-only"
+        )
+        request("permissions.save", {**rule, "enabled": False})
+        prepared = request(
+            "system.prepare", {"syscall": "fs.read", "arguments": {"path": str(path)}}
+        )
+        assert prepared["permission"]["effect"] == "ask"
+        request("system.execute", {"id": prepared["id"]}, expected_error="denied")
+        request("permissions.delete", {"id": rule["id"]})
+        assert request("permissions.list", {}) == []
+        prepared = request(
+            "system.prepare", {"syscall": "fs.read", "arguments": {"path": str(path)}}
+        )
+        request("system.execute", {"id": prepared["id"], "approved": True, "remember": "session"})
+        assert request("permissions.list", {})[0]["scope"] == "session"
 
     finally:
         process.terminate()

@@ -16,11 +16,14 @@ import threading
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from shutil import which
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from .permissions import Caller, Permissions
 
 
 class KernelError(Exception):
@@ -126,6 +129,7 @@ class Kernel:
         self.store = store
         self.pending = {}
         self.lock = threading.Lock()
+        self.permissions = Permissions(store, CATALOG)
         with self.store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS system_calls (
                 id TEXT PRIMARY KEY, syscall TEXT NOT NULL, resource TEXT NOT NULL,
@@ -134,6 +138,10 @@ class Kernel:
             )""")
             db.execute("""UPDATE system_calls SET state='interrupted',code='engine_restarted'
                 WHERE state IN ('pending','running')""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(system_calls)")}
+            for name in ("caller_json", "permission_json"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE system_calls ADD COLUMN {name} TEXT")
 
     def catalog(self):
         return [
@@ -203,7 +211,8 @@ class Kernel:
             guards["executable"] = fingerprint(Path(executable))
         return args, guards
 
-    def prepare(self, syscall, values):
+    def prepare(self, syscall, values, caller=None):
+        caller = caller or Caller()
         identifier = str(uuid4())
         try:
             args, guards = self.normalize(syscall, values)
@@ -214,6 +223,7 @@ class Kernel:
                     (identifier, syscall if isinstance(syscall, str) else "invalid", "", exc.code),
                 )
             raise
+        decision = self.permissions.evaluate(syscall, args, caller)
         now = time.monotonic()
         resource = args.get("path", args.get("cwd", ""))
         if syscall == "process.run":
@@ -230,6 +240,7 @@ class Kernel:
                 "args": args,
                 "guards": guards,
                 "expires": now + 300,
+                "caller": caller,
             }
             try:
                 with self.store.connect() as db:
@@ -240,9 +251,17 @@ class Kernel:
             except sqlite3.Error:
                 self.pending.pop(identifier)
                 raise
+        self.record_decision(identifier, caller, decision)
+        if decision["effect"] == "deny":
+            with self.lock:
+                self.pending.pop(identifier, None)
+            self.finish(identifier, "denied", "policy_denied", 0)
+            raise KernelError("policy_denied", "Appel interdit par une règle de permission.")
         return {
             "id": identifier,
             "syscall": syscall,
+            "caller": asdict(caller),
+            "permission": decision,
             "arguments": deepcopy(args),
             "expires_in_seconds": 300,
             "warning": "La commande dispose des droits de ton utilisateur. Le dossier de travail ne limite pas ses accès."
@@ -257,7 +276,16 @@ class Kernel:
                 (state, code, duration, identifier),
             )
 
-    def execute(self, identifier, approved):
+    def record_decision(self, identifier, caller, decision):
+        import json
+
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE system_calls SET caller_json=?,permission_json=? WHERE id=?",
+                (json.dumps(asdict(caller)), json.dumps(decision), identifier),
+            )
+
+    def execute(self, identifier, approved=None, remember="once"):
         # Consume atomically before touching the filesystem; tickets cannot be replayed.
         with self.lock:
             request = self.pending.pop(identifier, None)
@@ -267,7 +295,11 @@ class Kernel:
             )
         started = time.monotonic()
         try:
-            if approved is not True:
+            if remember not in {"once", "session", "permanent"}:
+                raise KernelError("invalid_scope", "Durée d’autorisation invalide.")
+            if approved is not None and approved is not True and approved is not False:
+                raise KernelError("denied", "Un accord explicite est requis.")
+            if approved is False:
                 raise KernelError("denied", "Appel refusé.")
             if request["expires"] <= started:
                 raise KernelError(
@@ -279,12 +311,26 @@ class Kernel:
                     "resource_changed",
                     "La ressource a changé depuis la demande. Prépare à nouveau l’appel.",
                 )
+            decision = self.permissions.evaluate(request["syscall"], args, request["caller"])
+            self.record_decision(identifier, request["caller"], decision)
+            if decision["effect"] == "deny":
+                raise KernelError("policy_denied", "Appel interdit par une règle de permission.")
+            if approved is not True and decision["effect"] != "allow":
+                raise KernelError("denied", "Une confirmation est requise pour cet appel.")
+            if remember != "once" and approved is not True:
+                raise KernelError(
+                    "denied", "Mémoriser un accord requiert une confirmation explicite."
+                )
             self.finish(identifier, "running", None, 0)
             result = self.perform(request["syscall"], args)
+            if approved is True and remember != "once":
+                self.permissions.remember(request["syscall"], args, request["caller"], remember)
         except KernelError as exc:
             self.finish(
                 identifier,
-                "denied" if exc.code in {"denied", "approval_expired"} else "error",
+                "denied"
+                if exc.code in {"denied", "approval_expired", "policy_denied"}
+                else "error",
                 exc.code,
                 round((time.monotonic() - started) * 1000),
             )

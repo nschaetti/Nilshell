@@ -1,6 +1,6 @@
 # Local syscall kernel
 
-The first kernel milestone supplies a fixed registry of operations. It does **not** yet expose tools to models or run Python tool code. The **Système** desktop page is a manual integration console for reviewing and testing calls.
+The kernel supplies a fixed registry of operations and [composable permissions](permissions.md). It does **not** yet expose tools to models or run Python tool code. The **Système** desktop page is a manual integration console for reviewing and testing calls.
 
 ## Calls
 
@@ -18,8 +18,8 @@ Paths must be absolute; `~` is expanded. No environment-variable expansion. Comm
 ## Request lifecycle
 
 1. `system.catalog` returns the operation descriptions and strict JSON schemas. Unknown fields and coerced argument types are rejected.
-2. `system.prepare` receives `{syscall, arguments}`. The engine validates types, resolves paths and executables, snapshots filesystem metadata and stores the immutable pending arguments in memory. It returns a request ID and the canonical arguments for display. This step reads metadata but neither file contents nor command output.
-3. The trusted desktop reviews those exact arguments and calls `system.execute` with `{id, approved: true}` or `{id, approved: false}`. Execution accepts no replacement arguments. A missing approval denies the call. Request IDs are consumed atomically once, expire after five minutes and do not survive restart.
+2. `system.prepare` receives `{syscall, arguments}`. The engine validates types, resolves paths and executables, snapshots filesystem metadata and stores the immutable pending arguments in memory. It returns a request ID, the canonical arguments, caller identity and current permission decision for display. A matching deny rejects preparation. This step reads metadata but neither file contents nor command output.
+3. The trusted desktop reviews those exact arguments and calls `system.execute` with `{id, approved: true}` or `{id, approved: false}`. Execution accepts no replacement arguments. Without an explicit approval, execution is permitted only by a current allow rule. Explicit deny rules cannot be overridden. Request IDs are consumed atomically once, expire after five minutes and do not survive restart.
 4. Execution revalidates resource metadata before calling the operation. Changed resources require a new request. On POSIX, directory traversal uses directory descriptors and `O_NOFOLLOW`; final file reads reject special files and symlink substitution. Windows currently uses canonical-path checks and has weaker protection against concurrent path changes.
 5. `system.history` returns the last 100 audit entries. The database keeps call name, resource path (executable only for commands), state, error code, timestamp and duration. It excludes file content, full command arguments, environment and stdout/stderr. Invalid prepares are logged without their input. Restart marks pending/running entries interrupted. Expiry is also checked lazily when executing or preparing another call.
 
@@ -33,6 +33,6 @@ Captured output is stored in temporary files rather than unbounded Python memory
 
 ## Authorization boundary and next milestone
 
-Only the trusted desktop currently calls this RPC surface. `system.execute` must never be offered as an agent tool: a model-supplied `approved: true` is not human authorization. The next milestone must bind trusted caller identity (assistant, model, tool and session) to a permission policy, and separate untrusted tool requests from desktop approval. Decision models will add conditions to that policy and will not expand permissions. Arbitrary Python will need OS isolation before the broker can be treated as its only route to system access.
+Only the trusted desktop currently calls this RPC surface. `system.execute` must never be offered as an agent tool: a model-supplied `approved: true` is not human authorization. The permission engine binds assistant, provider/model and tool identity to rules with session or permanent scope. The isolated-runner milestone must separate untrusted tool requests from trusted desktop approval and provide authenticated host-issued identities. Decision models will add conditions to that policy and will not expand permissions. Arbitrary Python will need OS isolation before the broker can be treated as its only route to system access.
 
 No delete, recursive mutation, app opening or kernel-mediated notification call is included in this milestone.

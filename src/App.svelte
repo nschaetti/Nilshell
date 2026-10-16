@@ -5,6 +5,7 @@
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
   import { desktop, rpc, onEngineEvent } from './lib/engine';
   import SystemPanel from './lib/SystemPanel.svelte';
+  import PermissionsPanel from './lib/PermissionsPanel.svelte';
   import type { Assistant, Bootstrap, Conversation, EngineEvent, Provider } from './lib/types';
 
   let providers = $state<Provider[]>([]);
@@ -12,7 +13,7 @@
   let conversations = $state<Conversation[]>([]);
   let current = $state<Conversation | null>(null);
   let selectedAssistant = $state('');
-  let view = $state<'chat' | 'providers' | 'assistants' | 'system'>('chat');
+  let view = $state<'chat' | 'providers' | 'assistants' | 'system' | 'permissions'>('chat');
   let input = $state('');
   let error = $state('');
   let notice = $state('');
@@ -149,6 +150,7 @@
       <button class:active={view === 'assistants'} onclick={() => { view = 'assistants'; editAssistant(); }}>◇ <span>Assistants</span><small>{assistants.length}</small></button>
       <button class:active={view === 'providers'} onclick={() => view = 'providers'}>⌘ <span>Fournisseurs</span><small>{providers.length}</small></button>
       <button class:active={view === 'system'} onclick={() => view = 'system'}>⚙ <span>Système</span></button>
+      <button class:active={view === 'permissions'} onclick={() => view = 'permissions'}>▣ <span>Permissions</span></button>
     </nav>
     <div class="section-label history-label">CONVERSATIONS RÉCENTES</div>
     <div class="history">
@@ -160,7 +162,7 @@
   </aside>
 
   <main>
-    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : view === 'system' ? 'Système' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
+    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : view === 'system' ? 'Système' : view === 'permissions' ? 'Permissions' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
     {#if !desktop}<div class="banner">Aperçu visuel — lance <code>npm run desktop dev</code> pour connecter le moteur local.</div>{/if}
     {#if error}<div class="banner error" role="alert">{error}<button onclick={() => error = ''} aria-label="Fermer l’erreur">×</button></div>{/if}
     {#if notice}<div class="banner notice" role="status">{notice}<button onclick={() => notice = ''} aria-label="Fermer le message">×</button></div>{/if}
@@ -178,6 +180,8 @@
         {/if}
       </div>
       <div class="composer-area"><form class="composer" onsubmit={event => { event.preventDefault(); send(); }}><textarea aria-label="Message" bind:value={input} placeholder={assistants.length ? 'Écris ton message…' : 'Configure un fournisseur et crée ton premier assistant…'} rows="3" disabled={busy || !assistants.length || !desktop} onkeydown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } }}></textarea><div class="composer-bottom"><span><span class="tiny-diamond">◇</span> {current?.assistant.model ?? assistants.find(a => a.id === selectedAssistant)?.model ?? 'Aucun modèle sélectionné'}</span>{#if busy}<button type="button" class="send-button stop" onclick={cancel}>■ Arrêter</button>{:else}<button class="send-button" disabled={!input.trim() || !selectedAssistant || !desktop} aria-label="Envoyer">↑</button>{/if}</div></form><div class="composer-hint">Entrée pour envoyer <span>·</span> Maj + Entrée pour une nouvelle ligne</div></div>
+    {:else if view === 'permissions'}
+      <PermissionsPanel />
     {:else if view === 'system'}
       <SystemPanel />
     {:else if view === 'providers'}
