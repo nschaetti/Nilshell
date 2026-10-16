@@ -6,14 +6,18 @@
   import { desktop, rpc, onEngineEvent } from './lib/engine';
   import SystemPanel from './lib/SystemPanel.svelte';
   import PermissionsPanel from './lib/PermissionsPanel.svelte';
-  import type { Assistant, Bootstrap, Conversation, EngineEvent, Provider } from './lib/types';
+  import ToolsPanel from './lib/ToolsPanel.svelte';
+  import type { Assistant, Bootstrap, Conversation, EngineEvent, Provider, PythonTool, ToolApproval } from './lib/types';
 
   let providers = $state<Provider[]>([]);
   let assistants = $state<Assistant[]>([]);
+  let tools = $state<PythonTool[]>([]);
+  let approval = $state<ToolApproval | null>(null);
+  let deciding = $state(false);
   let conversations = $state<Conversation[]>([]);
   let current = $state<Conversation | null>(null);
   let selectedAssistant = $state('');
-  let view = $state<'chat' | 'providers' | 'assistants' | 'system' | 'permissions'>('chat');
+  let view = $state<'chat' | 'providers' | 'assistants' | 'system' | 'permissions' | 'tools'>('chat');
   let input = $state('');
   let error = $state('');
   let notice = $state('');
@@ -24,7 +28,7 @@
   let models = $state<string[]>([]);
   let scroller = $state<HTMLDivElement>();
   let providerForm = $state({ id: '', name: '', kind: 'openai' as 'openai' | 'ollama', base_url: 'https://api.openai.com/v1', api_key: '', clear_key: false });
-  let assistantForm = $state({ id: '', name: '', provider_id: '', model: '', system_prompt: '' });
+  let assistantForm = $state({ id: '', name: '', provider_id: '', model: '', system_prompt: '', tool_ids: [] as string[] });
   let notifications = $state(false);
   let notificationPreference = false;
   const markdown = (text: string) => DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { FORBID_TAGS: ['img'], FORBID_ATTR: ['style'] });
@@ -32,7 +36,7 @@
 
   async function refresh() {
     const state = await rpc<Bootstrap>('bootstrap');
-    providers = state.providers; assistants = state.assistants; conversations = state.conversations;
+    tools = state.tools; providers = state.providers; assistants = state.assistants; conversations = state.conversations;
     if (!selectedAssistant || !assistants.some(a => a.id === selectedAssistant)) selectedAssistant = assistants[0]?.id ?? '';
   }
   onMount(() => {
@@ -47,6 +51,17 @@
   async function handleEvent(event: EngineEvent) {
     if (event.event === 'engine.stopped') { busy = false; error = 'Le moteur local s’est arrêté. Relance Nilshell.'; return; }
     if (event.conversation_id !== activeConversation) return;
+    if (event.event === 'chat.approval' && event.request) {
+      approval = event.request;
+      if (notifications && !document.hasFocus()) sendNotification({ title: 'Nilshell', body: 'Un outil attend ton autorisation.' });
+      await scroll();
+    }
+    if (event.event === 'chat.approval_done' && approval?.id === event.request_id) approval = null;
+    if (event.event === 'chat.tool' && current) {
+      const run = { id: event.run_id!, name: event.name!, tool_id: event.tool_id!, arguments: JSON.stringify(event.arguments), result: event.result === undefined ? null : JSON.stringify(event.result), state: event.state! };
+      current.tool_runs = [...(current.tool_runs ?? []).filter(r => r.id !== run.id), run];
+      await scroll();
+    }
     if (event.event === 'chat.delta' && current?.id === event.conversation_id) {
       let message = current.messages?.find(m => m.id === event.message_id);
       if (!message) {
@@ -57,7 +72,7 @@
       await scroll();
     }
     if (event.event === 'chat.done') {
-      busy = false; activeConversation = null;
+      busy = false; activeConversation = null; approval = null;
       if (event.error) error = event.error;
       try {
         if (current?.id === event.conversation_id) current = await rpc<Conversation>('conversation.get', { id: event.conversation_id });
@@ -116,7 +131,8 @@
     providerForm = { id: '', name: kind === 'ollama' ? 'Ollama' : kind === 'openrouter' ? 'OpenRouter' : 'OpenAI', kind: kind === 'ollama' ? 'ollama' : 'openai', base_url: kind === 'ollama' ? 'http://localhost:11434' : kind === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1', api_key: '', clear_key: false };
   }
   function editAssistant(assistant?: Assistant) {
-    assistantForm = { id: assistant?.id ?? '', name: assistant?.name ?? '', provider_id: assistant?.provider_id ?? providers[0]?.id ?? '', model: assistant?.model ?? '', system_prompt: assistant?.system_prompt ?? '' };
+    assistantForm = { id: assistant?.id ?? '', name: assistant?.name ?? '', provider_id: assistant?.provider_id ?? providers[0]?.id ?? '', model: assistant?.model ?? '', system_prompt: assistant?.system_prompt ?? '', tool_ids: assistant?.tool_ids ?? [] };
+    rpc<Bootstrap>('bootstrap').then(data => tools = data.tools).catch(explain);
     models = []; notice = ''; error = '';
   }
   async function loadModels() {
@@ -129,8 +145,14 @@
     saving = true; error = '';
     try {
       const result = await rpc<Assistant>('assistant.save', { ...assistantForm, id: assistantForm.id || null });
-      await refresh(); selectedAssistant = result.id; assistantForm = { ...result }; notice = 'Assistant enregistré. Les conversations existantes conservent leur configuration.';
+      await refresh(); selectedAssistant = result.id; assistantForm = { ...result, tool_ids: result.tool_ids ?? [] }; notice = 'Assistant enregistré. Les conversations existantes conservent leur configuration.';
     } catch (e) { explain(e); } finally { saving = false; }
+  }
+  async function answerApproval(approved: boolean, remember: 'once' | 'session' | 'permanent' = 'once') {
+    if (!approval || deciding) return;
+    deciding = true;
+    try { await rpc('chat.approve', { id: approval.id, approved, remember }); approval = null; }
+    catch (e) { explain(e); } finally { deciding = false; }
   }
   async function toggleNotifications() {
     try {
@@ -151,6 +173,7 @@
       <button class:active={view === 'providers'} onclick={() => view = 'providers'}>⌘ <span>Fournisseurs</span><small>{providers.length}</small></button>
       <button class:active={view === 'system'} onclick={() => view = 'system'}>⚙ <span>Système</span></button>
       <button class:active={view === 'permissions'} onclick={() => view = 'permissions'}>▣ <span>Permissions</span></button>
+      <button class:active={view === 'tools'} onclick={() => view = 'tools'}>⌁ <span>Outils Python</span></button>
     </nav>
     <div class="section-label history-label">CONVERSATIONS RÉCENTES</div>
     <div class="history">
@@ -162,7 +185,8 @@
   </aside>
 
   <main>
-    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : view === 'system' ? 'Système' : view === 'permissions' ? 'Permissions' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
+    <header class="topbar"><div><span class="breadcrumb">Workspace /</span> {view === 'chat' ? 'Conversation' : view === 'providers' ? 'Fournisseurs' : view === 'system' ? 'Système' : view === 'permissions' ? 'Permissions' : view === 'tools' ? 'Outils Python' : 'Assistants'}</div><button class="notification-button" onclick={toggleNotifications} disabled={!desktop} title="Notifications de fin de génération">{notifications ? '◉ Notifications activées' : '◎ Notifications'}</button></header>
+    {#if approval && view !== 'chat'}<div class="banner notice">Un outil attend ton autorisation.<button onclick={() => view = 'chat'}>Voir la conversation →</button></div>{/if}
     {#if !desktop}<div class="banner">Aperçu visuel — lance <code>npm run desktop dev</code> pour connecter le moteur local.</div>{/if}
     {#if error}<div class="banner error" role="alert">{error}<button onclick={() => error = ''} aria-label="Fermer l’erreur">×</button></div>{/if}
     {#if notice}<div class="banner notice" role="status">{notice}<button onclick={() => notice = ''} aria-label="Fermer le message">×</button></div>{/if}
@@ -176,10 +200,13 @@
             <div class="privacy-note"><span>▣</span> Conversations sur ton ordinateur · Modèles via ton API</div>
           </section>
         {:else}
-          <div class="message-list">{#each current.messages as message}<article class:user={message.role === 'user'} class="message"><div class="avatar">{message.role === 'user' ? 'N' : 'n_'}</div><div class="message-body"><div class="message-author">{message.role === 'user' ? 'Toi' : current.assistant.name}<span>{message.role === 'assistant' ? current.assistant.model : ''}</span></div><div class="markdown">{@html markdown(message.content)}</div>{#if message.status === 'interrupted'}<small class="muted">Réponse interrompue</small>{:else if message.status === 'error'}<small class="muted">Échec de la génération</small>{/if}</div></article>{/each}{#if busy}<div class="generating"><span class="pulse"></span> Génération en cours…</div>{/if}</div>
+          <div class="message-list">{#each current.messages as message}<article class:user={message.role === 'user'} class="message"><div class="avatar">{message.role === 'user' ? 'N' : 'n_'}</div><div class="message-body"><div class="message-author">{message.role === 'user' ? 'Toi' : current.assistant.name}<span>{message.role === 'assistant' ? current.assistant.model : ''}</span></div><div class="markdown">{@html markdown(message.content)}</div>{#if message.status === 'interrupted'}<small class="muted">Réponse interrompue</small>{:else if message.status === 'error'}<small class="muted">Échec de la génération</small>{/if}</div></article>{/each}{#if current.tool_runs?.length}<section class="chat-tool-runs" aria-label="Appels d’outils">{#each current.tool_runs as run}<details open={run.state === 'running'}><summary>{run.name} · {run.state}</summary><pre>{run.arguments}</pre>{#if run.result}<pre>{run.result}</pre>{/if}</details>{/each}</section>{/if}{#if busy}<div class="generating"><span class="pulse"></span> Génération en cours…</div>{/if}</div>
         {/if}
       </div>
+      {#if approval}<section class="chat-approval" aria-label="Autorisation d’un outil"><h2>Autoriser {approval.syscall} ?</h2><p>{approval.caller.model} · outil {approval.caller.tool_id}</p><pre>{JSON.stringify(approval.arguments, null, 2)}</pre>{#if approval.warning}<p>{approval.warning}</p>{/if}<p>Le résultat de l’outil sera transmis au fournisseur du modèle.</p><div class="approval-actions"><button class="outline" disabled={deciding} onclick={() => answerApproval(false)}>Refuser</button><button class="primary" disabled={deciding} onclick={() => answerApproval(true)}>Cette fois</button><button class="outline" disabled={deciding} onclick={() => answerApproval(true, 'session')}>Cette session</button><button class="outline" disabled={deciding} onclick={() => answerApproval(true, 'permanent')}>Permanent</button></div><small>Les accords mémorisés portent sur cet appel exact.</small></section>{/if}
       <div class="composer-area"><form class="composer" onsubmit={event => { event.preventDefault(); send(); }}><textarea aria-label="Message" bind:value={input} placeholder={assistants.length ? 'Écris ton message…' : 'Configure un fournisseur et crée ton premier assistant…'} rows="3" disabled={busy || !assistants.length || !desktop} onkeydown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } }}></textarea><div class="composer-bottom"><span><span class="tiny-diamond">◇</span> {current?.assistant.model ?? assistants.find(a => a.id === selectedAssistant)?.model ?? 'Aucun modèle sélectionné'}</span>{#if busy}<button type="button" class="send-button stop" onclick={cancel}>■ Arrêter</button>{:else}<button class="send-button" disabled={!input.trim() || !selectedAssistant || !desktop} aria-label="Envoyer">↑</button>{/if}</div></form><div class="composer-hint">Entrée pour envoyer <span>·</span> Maj + Entrée pour une nouvelle ligne</div></div>
+    {:else if view === 'tools'}
+      <ToolsPanel />
     {:else if view === 'permissions'}
       <PermissionsPanel />
     {:else if view === 'system'}
@@ -187,7 +214,7 @@
     {:else if view === 'providers'}
       <div class="settings-page"><div class="eyebrow">CONNEXIONS</div><h1>Tes fournisseurs.</h1><p class="subtitle">Choisis où tes modèles s’exécutent. Garde le contrôle de tes connexions.</p><div class="settings-grid"><section class="settings-list"><button class="outline" onclick={() => editProvider()}>＋ Ajouter un fournisseur</button>{#each providers as provider}<button class="entity-card" class:selected={providerForm.id === provider.id} onclick={() => editProvider(provider)}><strong>{provider.name}</strong><span>{provider.base_url}</span><small>{provider.has_key ? 'Clé configurée' : 'Sans clé API'}</small></button>{/each}</section><form class="settings-form" onsubmit={event => { event.preventDefault(); saveProvider(); }}><h2>{providerForm.id ? 'Modifier le fournisseur' : 'Nouveau fournisseur'}</h2><div class="presets"><button type="button" onclick={() => preset('openai')}>OpenAI</button><button type="button" onclick={() => preset('openrouter')}>OpenRouter</button><button type="button" onclick={() => preset('ollama')}>Ollama</button></div><label>Nom<input bind:value={providerForm.name} required maxlength="100" placeholder="Mon fournisseur"/></label><label>Protocole<select bind:value={providerForm.kind}><option value="openai">API compatible OpenAI</option><option value="ollama">API native Ollama</option></select></label><label>URL de base<input bind:value={providerForm.base_url} required type="url" placeholder="https://api.openai.com/v1"/></label><p class="field-help">OpenAI : inclure /v1. Ollama : adresse du serveur sans /api.</p><label>Clé API<input type="password" bind:value={providerForm.api_key} autocomplete="new-password" placeholder={providerForm.id ? 'Laisser vide pour conserver la clé' : 'Optionnelle pour Ollama'} /></label>{#if providerForm.id}<label class="checkbox"><input type="checkbox" bind:checked={providerForm.clear_key}/> Effacer la clé existante</label>{/if}<p class="field-help">Stockée dans le trousseau système si disponible. Jamais dans l’historique.</p><button class="primary" disabled={saving || !desktop}>{saving ? 'Enregistrement…' : 'Enregistrer le fournisseur'}</button></form></div></div>
     {:else}
-      <div class="settings-page"><div class="eyebrow">PERSONNALITÉS & INSTRUCTIONS</div><h1>Tes assistants.</h1><p class="subtitle">Un modèle et un prompt système pour chaque façon de travailler.</p>{#if !providers.length}<div class="empty-panel"><p>Connecte un fournisseur pour créer ton premier assistant.</p><button class="primary" onclick={() => view = 'providers'}>Configurer un fournisseur →</button></div>{:else}<div class="settings-grid"><section class="settings-list"><button class="outline" onclick={() => editAssistant()}>＋ Nouvel assistant</button>{#each assistants as assistant}<button class="entity-card" class:selected={assistantForm.id === assistant.id} onclick={() => editAssistant(assistant)}><strong>{assistant.name}</strong><span>{assistant.model}</span></button>{/each}</section><form class="settings-form" onsubmit={event => { event.preventDefault(); saveAssistant(); }}><h2>{assistantForm.id ? 'Modifier l’assistant' : 'Nouvel assistant'}</h2><label>Nom<input bind:value={assistantForm.name} required maxlength="100" placeholder="Ada, Gaspard…"/></label><label>Fournisseur<select bind:value={assistantForm.provider_id} onchange={() => { models = []; assistantForm.model = ''; }} required><option value="" disabled>Choisir un fournisseur</option>{#each providers as provider}<option value={provider.id}>{provider.name}</option>{/each}</select></label><label>Modèle<div class="input-action"><input bind:value={assistantForm.model} list="models" required maxlength="300" placeholder="Identifiant du modèle"/><button type="button" class="outline" onclick={loadModels} disabled={loadingModels || !assistantForm.provider_id}>{loadingModels ? '…' : 'Charger'}</button></div><datalist id="models">{#each models as model}<option value={model}></option>{/each}</datalist></label><p class="field-help">Charge la liste ou saisis directement l’identifiant du modèle.</p><label>Prompt système<textarea bind:value={assistantForm.system_prompt} rows="9" placeholder="Tu es un assistant…" maxlength="100000"></textarea></label><button class="primary" disabled={saving || !desktop}>{saving ? 'Enregistrement…' : 'Enregistrer l’assistant'}</button></form></div>{/if}</div>
+      <div class="settings-page"><div class="eyebrow">PERSONNALITÉS & INSTRUCTIONS</div><h1>Tes assistants.</h1><p class="subtitle">Un modèle et un prompt système pour chaque façon de travailler.</p>{#if !providers.length}<div class="empty-panel"><p>Connecte un fournisseur pour créer ton premier assistant.</p><button class="primary" onclick={() => view = 'providers'}>Configurer un fournisseur →</button></div>{:else}<div class="settings-grid"><section class="settings-list"><button class="outline" onclick={() => editAssistant()}>＋ Nouvel assistant</button>{#each assistants as assistant}<button class="entity-card" class:selected={assistantForm.id === assistant.id} onclick={() => editAssistant(assistant)}><strong>{assistant.name}</strong><span>{assistant.model}</span></button>{/each}</section><form class="settings-form" onsubmit={event => { event.preventDefault(); saveAssistant(); }}><h2>{assistantForm.id ? 'Modifier l’assistant' : 'Nouvel assistant'}</h2><label>Nom<input bind:value={assistantForm.name} required maxlength="100" placeholder="Ada, Gaspard…"/></label><label>Fournisseur<select bind:value={assistantForm.provider_id} onchange={() => { models = []; assistantForm.model = ''; }} required><option value="" disabled>Choisir un fournisseur</option>{#each providers as provider}<option value={provider.id}>{provider.name}</option>{/each}</select></label><label>Modèle<div class="input-action"><input bind:value={assistantForm.model} list="models" required maxlength="300" placeholder="Identifiant du modèle"/><button type="button" class="outline" onclick={loadModels} disabled={loadingModels || !assistantForm.provider_id}>{loadingModels ? '…' : 'Charger'}</button></div><datalist id="models">{#each models as model}<option value={model}></option>{/each}</datalist></label><p class="field-help">Charge la liste ou saisis directement l’identifiant du modèle.</p><label>Prompt système<textarea bind:value={assistantForm.system_prompt} rows="9" placeholder="Tu es un assistant…" maxlength="100000"></textarea></label><fieldset class="assistant-tools"><legend>Outils Python</legend>{#each tools as tool}<label class="checkbox"><input type="checkbox" value={tool.id} bind:group={assistantForm.tool_ids} disabled={!tool.enabled}/>{tool.name}{tool.enabled ? '' : ' (désactivé)'}</label>{:else}<p class="field-help">Crée un outil dans Outils Python.</p>{/each}</fieldset><p class="field-help">La sélection d’outils s’applique aux nouvelles conversations.</p><button class="primary" disabled={saving || !desktop}>{saving ? 'Enregistrement…' : 'Enregistrer l’assistant'}</button></form></div>{/if}</div>
     {/if}
   </main>
 </div>

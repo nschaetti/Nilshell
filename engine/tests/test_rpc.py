@@ -155,6 +155,29 @@ def test_stdio_chat_roundtrip(tmp_path):
         )
         request("system.execute", {"id": prepared["id"], "approved": True, "remember": "session"})
         assert request("permissions.list", {})[0]["scope"] == "session"
+        definition = request(
+            "tools.save",
+            {
+                "name": "example",
+                "description": "List files",
+                "code": 'def run(arguments, system):\n    return system.call("fs.list", path=arguments["path"])',
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        )
+        assert request("tools.list", {})[0]["id"] == definition["id"]
+        edited = request("assistant.save", {**assistant, "tool_ids": [definition["id"]]})
+        new_conversation = request("conversation.create", {"assistant_id": edited["id"]})
+        assert new_conversation["assistant"]["tool_ids"] == [definition["id"]]
+        runtime = request("tools.runtime", {})
+        assert isinstance(runtime["available"], bool)
+        if os.environ.get("NILSHELL_REQUIRE_SANDBOX") == "1":
+            assert runtime["available"], runtime["message"]
+        request("tools.delete", {"id": definition["id"]})
+        assert request("tools.list", {}) == []
 
     finally:
         process.terminate()

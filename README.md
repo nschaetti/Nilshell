@@ -13,7 +13,9 @@ A desktop workspace for AI assistants. Linux first, with a Tauri foundation for 
 
 A local syscall kernel is available in **Système** for manual testing: `fs.stat`, `fs.list`, `fs.read`, `fs.write`, `fs.mkdir`, `process.run`. Prepare a call, review the resolved arguments, then approve or deny that one execution. Requests expire after five minutes. The **Permissions** page adds composable allow/deny/ask rules by assistant, provider/model, tool, syscall, directory, executable, arguments and parameters. Approval can be one-time, for the application session, or permanent; remembered approvals match only the exact call. See [permission semantics](docs/permissions.md). The local audit log excludes content, command arguments and output.
 
-Isolated Python tools, LLM tool calling, decision models, attachments and knowledge indexing are planned next. Assistants cannot call the kernel yet. Commands run with your user privileges; this is not a sandbox. See [kernel contract](docs/kernel.md).
+Python tools can now be edited in **Outils Python**, enabled per assistant, and called by tool-capable OpenAI-compatible or Ollama models. Every host operation uses the syscall broker with host-issued identity and existing permissions. The Linux worker uses Bubblewrap with no unrestricted fallback; install `bubblewrap` and check its runtime status. See [Python tool setup and boundaries](docs/tools.md).
+
+Decision models, third-party tool dependencies, attachments and knowledge indexing are planned next. The Python runtime is isolated; an explicitly approved host command still runs with your user privileges. See [kernel contract](docs/kernel.md).
 
 ## Run on Linux
 
@@ -23,7 +25,7 @@ On Ubuntu / Debian, install the Tauri system dependencies:
 
 ```bash
 sudo apt update
-sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libcairo2-dev libdbus-1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libgdk-pixbuf-2.0-dev libcairo2-dev libdbus-1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf bubblewrap
 ```
 
 Then:

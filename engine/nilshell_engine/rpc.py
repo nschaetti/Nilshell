@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -15,6 +16,7 @@ from . import providers
 from .kernel import Kernel, KernelError
 from .permissions import Caller
 from .store import Store
+from .tools import Sandbox, ToolError, ToolRegistry
 
 
 class ProviderInput(BaseModel):
@@ -32,12 +34,16 @@ class AssistantInput(BaseModel):
     provider_id: str
     model: str = Field(min_length=1, max_length=300)
     system_prompt: str = Field(default="", max_length=100000)
+    tool_ids: list[str] = Field(default_factory=list, max_length=16)
 
 
 class Engine:
     def __init__(self, directory, emit):
         self.store = Store(Path(directory))
         self.kernel = Kernel(self.store)
+        self.tools = ToolRegistry(self.store)
+        self.sandbox = Sandbox()
+        self.approvals = {}
         self.emit = emit
         self.lock = threading.Lock()
         self.active = None
@@ -52,6 +58,27 @@ class Engine:
             return ""
 
     def dispatch(self, method, params):
+        if method == "tools.list":
+            return self.tools.all()
+        if method == "tools.save":
+            return self.tools.save(params)
+        if method == "tools.delete":
+            return self.tools.delete(params["id"])
+        if method == "tools.runtime":
+            return self.sandbox.status()
+        if method == "chat.approve":
+            if type(params.get("approved")) is not bool or params.get("remember", "once") not in {
+                "once",
+                "session",
+                "permanent",
+            }:
+                raise ValueError("Décision d’autorisation invalide.")
+            with self.lock:
+                pending = self.approvals.get(params["id"])
+                if pending is None or pending["decision"] is not None:
+                    raise ValueError("Cette demande n’est plus en attente.")
+                pending["decision"] = (params["approved"], params.get("remember", "once"))
+            return True
         if method == "permissions.list":
             return self.kernel.permissions.rules()
         if method == "permissions.save":
@@ -98,6 +125,7 @@ class Engine:
                 ],
                 "assistants": self.store.all("assistants"),
                 "conversations": self.store.all("conversations"),
+                "tools": self.tools.all(),
             }
         if method == "provider.save":
             data = ProviderInput.model_validate(params).model_dump()
@@ -159,6 +187,125 @@ class Engine:
             return {"message_id": message_id}
         raise ValueError("Méthode inconnue")
 
+    def request_syscall(
+        self, conversation_id, run_id, tool, caller, syscall, arguments, cancelled, alive=None
+    ):
+        current = self.tools.get(tool["id"])
+        if current is None or not current["enabled"] or current != tool:
+            raise ToolError("Outil désactivé ou modifié pendant l’exécution.")
+        if cancelled.is_set():
+            raise ToolError("Outil interrompu.")
+        try:
+            prepared = self.kernel.prepare(syscall, arguments, caller)
+        except KernelError as exc:
+            raise ToolError(str(exc)) from None
+        approved, remember = None, "once"
+        try:
+            if prepared["permission"]["effect"] != "allow":
+                pending = {"decision": None}
+                with self.lock:
+                    self.approvals[prepared["id"]] = pending
+                self.emit(
+                    {
+                        "event": "chat.approval",
+                        "conversation_id": conversation_id,
+                        "run_id": run_id,
+                        "request": prepared,
+                    }
+                )
+                started = time.monotonic()
+                while not cancelled.wait(0.1):
+                    with self.lock:
+                        decision = pending["decision"]
+                    if decision is not None:
+                        approved, remember = decision
+                        break
+                    if (alive is not None and not alive()) or time.monotonic() - started >= 300:
+                        approved = False
+                        break
+                if cancelled.is_set():
+                    approved = False
+            current = self.tools.get(tool["id"])
+            if (
+                cancelled.is_set()
+                or (alive is not None and not alive())
+                or current is None
+                or not current["enabled"]
+                or current != tool
+            ):
+                approved = False
+            return self.kernel.execute(prepared["id"], approved, remember)["result"]
+        except KernelError as exc:
+            raise ToolError(str(exc)) from None
+        finally:
+            with self.lock:
+                self.approvals.pop(prepared["id"], None)
+            self.emit(
+                {
+                    "event": "chat.approval_done",
+                    "conversation_id": conversation_id,
+                    "request_id": prepared["id"],
+                }
+            )
+
+    def run_tool(self, conversation_id, message_id, tool, arguments, cancelled):
+        run_id = self.tools.start_run(conversation_id, message_id, tool, arguments)
+        self.emit(
+            {
+                "event": "chat.tool",
+                "conversation_id": conversation_id,
+                "run_id": run_id,
+                "name": tool["name"],
+                "tool_id": tool["id"],
+                "arguments": arguments,
+                "state": "running",
+            }
+        )
+        try:
+            self.tools.validate_arguments(tool, arguments)
+            current = self.tools.get(tool["id"])
+            if current is None or not current["enabled"] or current != tool:
+                raise ToolError("Outil désactivé, supprimé ou modifié depuis le début du tour.")
+            assistant = self.store.conversation(conversation_id)["assistant"]
+            caller = Caller(
+                assistant_id=assistant["id"],
+                provider_id=assistant["provider_id"],
+                model=assistant["model"],
+                tool_id=tool["id"],
+            )
+            calls = 0
+
+            def syscall(name, values, alive=None):
+                nonlocal calls
+                calls += 1
+                if calls > 32:
+                    raise ToolError("Limite de 32 appels système par exécution d’outil.")
+                return self.request_syscall(
+                    conversation_id, run_id, tool, caller, name, values, cancelled, alive
+                )
+
+            result = self.sandbox.run(tool, arguments, syscall, cancelled)
+            state = "complete"
+        except Exception as exc:
+            result = {
+                "error": str(exc) if isinstance(exc, ToolError) else "Échec de l’outil Python."
+            }
+            state = "interrupted" if cancelled.is_set() else "error"
+        self.tools.finish_run(run_id, result, state)
+        self.emit(
+            {
+                "event": "chat.tool",
+                "conversation_id": conversation_id,
+                "run_id": run_id,
+                "name": tool["name"],
+                "tool_id": tool["id"],
+                "arguments": arguments,
+                "result": result,
+                "state": state,
+            }
+        )
+        return result
+
     def generate(self, conversation, provider, content, message_id, cancelled):
         identifier = conversation["id"]
         text = ""
@@ -166,32 +313,152 @@ class Engine:
         error = None
         assistant = conversation["assistant"]
         messages = [{"role": "system", "content": assistant["system_prompt"]}]
-        messages += [
-            {"role": m["role"], "content": m["content"]}
-            for m in conversation["messages"]
-            if m["status"] == "complete"
-        ]
+        for message in conversation["messages"]:
+            if message["status"] == "complete":
+                if message.get("protocol_json"):
+                    messages.extend(json.loads(message["protocol_json"]))
+                else:
+                    messages.append({"role": message["role"], "content": message["content"]})
+            elif message["role"] == "assistant":
+                runs = [
+                    row
+                    for row in conversation.get("tool_runs", [])
+                    if row["message_id"] == message["id"]
+                ]
+                if runs:
+                    report = [
+                        {"tool": row["name"], "state": row["state"], "result": row["result"]}
+                        for row in runs
+                    ]
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "Tour précédent interrompu ou en erreur. Des outils peuvent déjà avoir agi ; ne répète pas leurs actions sans vérifier. Journal : "
+                            + json.dumps(report, ensure_ascii=False)[:131072],
+                        }
+                    )
         messages.append({"role": "user", "content": content})
+        enabled = {
+            tool["name"]: tool
+            for tool in self.tools.all()
+            if tool["id"] in assistant.get("tool_ids", []) and tool["enabled"]
+        }
+        specifications = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"],
+                },
+            }
+            for tool in enabled.values()
+        ]
+        protocol = []
+        executions = 0
         try:
-            for delta in providers.stream(
-                provider, self.get_key(provider["id"]), assistant["model"], messages, cancelled
-            ):
-                text += delta
-                # Persist each received delta so an engine crash preserves partial output.
+            for round_index in range(8):
+                if cancelled.is_set():
+                    break
+                turn = None
+                if specifications:
+                    events = providers.stream_turn(
+                        provider,
+                        self.get_key(provider["id"]),
+                        assistant["model"],
+                        messages,
+                        cancelled,
+                        specifications,
+                    )
+                else:
+                    events = (
+                        {"text": delta}
+                        for delta in providers.stream(
+                            provider,
+                            self.get_key(provider["id"]),
+                            assistant["model"],
+                            messages,
+                            cancelled,
+                        )
+                    )
+                for event in events:
+                    if "message" in event:
+                        turn = event["message"]
+                    if "text" in event:
+                        delta = event["text"]
+                        text += delta
+                        if len(text) > 200000:
+                            raise providers.ProviderError("Réponse trop volumineuse.")
+                        self.store.update_message(message_id, text, "streaming")
+                        self.emit(
+                            {
+                                "event": "chat.delta",
+                                "conversation_id": identifier,
+                                "message_id": message_id,
+                                "delta": delta,
+                            }
+                        )
+                if cancelled.is_set():
+                    break
+                if turn is None:
+                    turn = {"role": "assistant", "content": text}
+                protocol.append(turn)
+                messages.append(turn)
+                calls = turn.get("tool_calls", [])
+                if not calls:
+                    break
+                for call in calls:
+                    executions += 1
+                    function = call["function"]
+                    tool = enabled.get(function["name"])
+                    try:
+                        arguments = function["arguments"]
+                        if isinstance(arguments, str):
+                            arguments = providers.strict_json(arguments)
+                        if tool is None:
+                            raise ToolError("Outil non autorisé pour cet assistant.")
+                        if executions > 32 or round_index == 7:
+                            raise ToolError("Limite d’appels d’outils atteinte.")
+                        if cancelled.is_set():
+                            raise ToolError("Outil interrompu.")
+                        result = self.run_tool(identifier, message_id, tool, arguments, cancelled)
+                    except (ToolError, ValueError, TypeError):
+                        result = {
+                            "error": "Appel d’outil invalide, interrompu ou hors des limites autorisées."
+                        }
+                    reply = {"role": "tool", "content": json.dumps(result, ensure_ascii=False)}
+                    if provider["kind"] == "ollama":
+                        reply["tool_name"] = function["name"]
+                    else:
+                        reply["tool_call_id"] = call["id"]
+                    protocol.append(reply)
+                    messages.append(reply)
+                self.store.set_protocol(message_id, protocol)
                 self.store.update_message(message_id, text, "streaming")
-                self.emit(
-                    {
-                        "event": "chat.delta",
-                        "conversation_id": identifier,
-                        "message_id": message_id,
-                        "delta": delta,
-                    }
-                )
+                if round_index == 7:
+                    raise providers.ProviderError("Limite de huit tours d’outils atteinte.")
+                # Separate narration before and after tool execution in the visible text.
+                if text and not text.endswith("\n\n"):
+                    text += "\n\n"
+                    self.emit(
+                        {
+                            "event": "chat.delta",
+                            "conversation_id": identifier,
+                            "message_id": message_id,
+                            "delta": "\n\n",
+                        }
+                    )
             if cancelled.is_set():
                 status = "interrupted"
+            else:
+                self.store.set_protocol(message_id, protocol)
         except Exception as exc:
             status = "error"
-            error = str(exc) if isinstance(exc, providers.ProviderError) else "Erreur de génération"
+            error = (
+                str(exc)
+                if isinstance(exc, (providers.ProviderError, ToolError))
+                else "Erreur de génération"
+            )
         finally:
             self.store.update_message(message_id, text, status)
             with self.lock:
@@ -229,7 +496,7 @@ def main():
             safe = (
                 str(exc)
                 if type(exc) is ValueError
-                or isinstance(exc, (providers.ProviderError, KernelError))
+                or isinstance(exc, (providers.ProviderError, KernelError, ToolError))
                 else "Opération impossible. Vérifie les paramètres et la connexion."
             )
             emit(

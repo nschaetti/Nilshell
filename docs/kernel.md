@@ -1,6 +1,6 @@
 # Local syscall kernel
 
-The kernel supplies a fixed registry of operations and [composable permissions](permissions.md). It does **not** yet expose tools to models or run Python tool code. The **Système** desktop page is a manual integration console for reviewing and testing calls.
+The kernel supplies a fixed registry of operations and [composable permissions](permissions.md). The [Python tool runtime](tools.md) now exposes selected tool functions to models and brokers their host operations. The **Système** desktop page is a manual integration console for reviewing and testing calls.
 
 ## Calls
 
@@ -33,6 +33,6 @@ Captured output is stored in temporary files rather than unbounded Python memory
 
 ## Authorization boundary and next milestone
 
-Only the trusted desktop currently calls this RPC surface. `system.execute` must never be offered as an agent tool: a model-supplied `approved: true` is not human authorization. The permission engine binds assistant, provider/model and tool identity to rules with session or permanent scope. The isolated-runner milestone must separate untrusted tool requests from trusted desktop approval and provide authenticated host-issued identities. Decision models will add conditions to that policy and will not expand permissions. Arbitrary Python will need OS isolation before the broker can be treated as its only route to system access.
+Only the trusted desktop currently calls this RPC surface. `system.execute` must never be offered as an agent tool: a model-supplied `approved: true` is not human authorization. The permission engine binds assistant, provider/model and tool identity to rules with session or permanent scope. The Linux isolated runner separates untrusted tool requests from trusted desktop approval and supplies host-issued identities through its private broker channel. Decision models will add conditions to that policy and will not expand permissions. Arbitrary Python will need OS isolation before the broker can be treated as its only route to system access.
 
 No delete, recursive mutation, app opening or kernel-mediated notification call is included in this milestone.

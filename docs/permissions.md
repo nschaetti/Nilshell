@@ -1,12 +1,12 @@
 # Composable permissions
 
-The **Permissions** page creates, edits, disables and revokes rules. The **Système** console lets you test a rule with an assistant and tool identifier. Actual LLM tool calling and the isolated Python tool runtime are still separate milestones.
+The **Permissions** page creates, edits, disables and revokes rules. The **Système** console lets you test a rule with an assistant and tool identifier. Selected Python tools can now be called from conversations through the [Linux isolated runtime](tools.md).
 
 ## Identity and combinations
 
 Every selector present in a rule must match (AND): assistant ID, provider ID, exact model identifier, exact tool ID, syscall, canonical directory, executable, command arguments and parameter conditions. Empty selectors are wildcards. Rules do not use glob patterns for identities or paths.
 
-In the manual console, model and provider are derived by the engine from the selected stored assistant. A client-supplied model/provider cannot override them. The tool identifier is a trusted-console test selector; it is not an authenticated tool identity yet. A future isolated runner must supply its identity through a separate host-owned interface and must not expose desktop approval or rule-management RPCs to the model or to tool code.
+In the manual console, model and provider are derived by the engine from the selected stored assistant. A client-supplied model/provider cannot override them. The manual console tool identifier is a trusted test selector. During real tool execution, the host supplies the registered tool UUID and conversation assistant/provider/model identity. The isolated runner uses a separate broker-only interface; desktop approval and rule-management RPCs are not exposed to the model or tool code.
 
 ## Resolution
 

@@ -14,7 +14,7 @@ const target = process.env.TAURI_ENV_TARGET_TRIPLE ?? rust.stdout?.match(/^host:
 if (!target) throw new Error('Install Rust before building the desktop app.');
 const engine = resolve('engine');
 run('uv', ['sync', '--frozen'], engine);
-run('uv', ['run', '--frozen', 'pyinstaller', '--noconfirm', '--clean', '--onefile', '--name', 'nilshell-engine', '--collect-all', 'keyring', '--hidden-import', 'keyring.backends.SecretService', '--hidden-import', 'keyring.backends.macOS', '--hidden-import', 'keyring.backends.Windows', 'main.py'], engine);
+run('uv', ['run', '--frozen', 'pyinstaller', '--noconfirm', '--clean', '--onefile', '--name', 'nilshell-engine', '--collect-all', 'keyring', '--collect-all', 'jsonschema_specifications', '--hidden-import', 'keyring.backends.SecretService', '--hidden-import', 'keyring.backends.macOS', '--hidden-import', 'keyring.backends.Windows', 'main.py'], engine);
 const extension = process.platform === 'win32' ? '.exe' : '';
 mkdirSync('src-tauri/binaries', { recursive: true });
 copyFileSync(resolve(engine, `dist/nilshell-engine${extension}`), `src-tauri/binaries/nilshell-engine-${target}${extension}`);
